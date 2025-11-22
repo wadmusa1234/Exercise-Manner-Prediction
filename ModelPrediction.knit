@@ -1,0 +1,602 @@
+---
+title: "Machine Learning Prediction Model: Decision Tree vs Random Forest"
+author: "Ahmed"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: cosmo
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = 'center',
+  cache = TRUE
+)
+```
+
+# Executive Summary
+
+This document presents a comprehensive machine learning analysis comparing Decision Tree and Random Forest classification models. The analysis includes:
+
+- Data preprocessing and cleaning
+- Cross-validation setup (75/25 split)
+- Model training and evaluation
+- Performance comparison
+- Final predictions on test dataset
+
+---
+
+# Package Installation and Loading
+```{r packages}
+# Define required packages
+required_packages <- c("caret", "randomForest", "rpart", "rpart.plot", "ggplot2")
+
+# Install and load packages
+for (package in required_packages) {
+    if (!require(package, character.only = TRUE)) {
+        install.packages(package, dependencies = TRUE)
+        library(package, character.only = TRUE)
+    }
+}
+
+# Set seed for reproducibility
+set.seed(20000)
+
+cat("✓ All packages loaded successfully\n")
+```
+
+---
+
+# Data Loading
+```{r data_loading}
+# Define URLs
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"   
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Load data to memory
+cat("Loading data from remote sources...\n")
+training <- read.csv(url(trainUrl), na.strings = c("NA", "#DIV/0!", ""))  
+testing <- read.csv(url(testUrl), na.strings = c("NA", "#DIV/0!", ""))
+
+# Create summary table
+data_summary <- data.frame(
+  Dataset = c("Training", "Testing"),
+  Rows = c(nrow(training), nrow(testing)),
+  Columns = c(ncol(training), ncol(testing))
+)
+
+knitr::kable(data_summary, 
+             caption = "Original Dataset Dimensions",
+             col.names = c("Dataset", "Observations", "Variables"))
+```
+
+**Status:** Data successfully loaded with `r nrow(training)` training observations and `r nrow(testing)` test observations.
+
+---
+
+# Data Cleaning and Preprocessing
+```{r data_cleaning}
+cat("Starting data cleaning process...\n\n")
+
+# Store original dimensions
+orig_train_cols <- ncol(training)
+orig_test_cols <- ncol(testing)
+
+# Step 1: Remove variables with all NAs
+cat("Step 1: Removing columns with missing values\n")
+training <- training[, colSums(is.na(training)) == 0]
+testing <- testing[, colSums(is.na(testing)) == 0]
+cat("  - Training: Removed", orig_train_cols - ncol(training), "columns\n")
+cat("  - Testing: Removed", orig_test_cols - ncol(testing), "columns\n\n")
+
+# Step 2: Remove non-predictor columns (metadata)
+cat("Step 2: Removing non-predictor columns (first 7 columns)\n")
+cat("  - Removed: X, user_name, timestamps, and window variables\n\n")
+training <- training[, -c(1:7)]
+testing <- testing[, -c(1:7)]
+
+# Step 3: Ensure target variable is a factor
+cat("Step 3: Converting target variable to factor\n")
+training$classe <- as.factor(training$classe)
+cat("  - Target classes:", levels(training$classe), "\n\n")
+
+# Create cleaned data summary
+cleaned_summary <- data.frame(
+  Dataset = c("Training", "Testing"),
+  Rows = c(nrow(training), nrow(testing)),
+  Columns = c(ncol(training), ncol(testing)),
+  Predictors = c(ncol(training) - 1, ncol(testing) - 1)
+)
+
+knitr::kable(cleaned_summary, 
+             caption = "Dataset Dimensions After Cleaning",
+             col.names = c("Dataset", "Observations", "Total Variables", "Predictors"))
+```
+
+## Class Distribution
+```{r class_distribution, fig.width=8, fig.height=5}
+# Display class distribution
+class_table <- table(training$classe)
+class_df <- as.data.frame(class_table)
+names(class_df) <- c("Class", "Frequency")
+class_df$Percentage <- round(class_df$Frequency / sum(class_df$Frequency) * 100, 2)
+
+knitr::kable(class_df, 
+             caption = "Target Variable Distribution",
+             col.names = c("Class", "Count", "Percentage (%)"))
+
+# Visualize class distribution
+ggplot(class_df, aes(x = Class, y = Frequency, fill = Class)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = Frequency), vjust = -0.5, size = 4) +
+  theme_minimal() +
+  labs(title = "Distribution of Target Classes",
+       x = "Class", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+---
+
+# Cross-Validation Setup
+```{r cross_validation}
+cat("Creating training and validation sets...\n\n")
+
+# Split training data: 75% training, 25% validation
+inTrain <- createDataPartition(y = training$classe, p = 0.75, list = FALSE)    
+NEOTraining <- training[inTrain, ]
+NEOTesting <- training[-inTrain, ]
+
+# Create split summary
+split_summary <- data.frame(
+  Dataset = c("NEO Training", "NEO Validation", "Final Test"),
+  Observations = c(nrow(NEOTraining), nrow(NEOTesting), nrow(testing)),
+  Percentage = c(75, 25, NA),
+  Purpose = c("Model Training", "Model Validation", "Final Predictions")
+)
+
+knitr::kable(split_summary, 
+             caption = "Data Split Summary",
+             col.names = c("Dataset", "Observations", "% of Training", "Purpose"))
+
+# Display class distribution in splits
+cat("\n")
+cat("Class distribution maintained across splits:\n")
+split_dist <- data.frame(
+  Class = levels(training$classe),
+  Training = as.vector(table(NEOTraining$classe)),
+  Validation = as.vector(table(NEOTesting$classe))
+)
+split_dist$Training_Pct <- round(split_dist$Training / sum(split_dist$Training) * 100, 1)
+split_dist$Validation_Pct <- round(split_dist$Validation / sum(split_dist$Validation) * 100, 1)
+
+knitr::kable(split_dist,
+             caption = "Class Distribution Across Data Splits",
+             col.names = c("Class", "Training Count", "Validation Count", 
+                          "Training %", "Validation %"))
+```
+
+---
+
+# Model Training and Evaluation
+
+## Decision Tree Model
+
+### Training
+```{r decision_tree_training}
+cat("========================================\n")
+cat("DECISION TREE MODEL\n")
+cat("========================================\n\n")
+
+# Train Decision Tree model
+cat("Training Decision Tree model...\n")
+start_time <- Sys.time()
+fitDT <- rpart(classe ~ ., data = NEOTraining, method = "class")
+end_time <- Sys.time()
+training_time_dt <- round(difftime(end_time, start_time, units = "secs"), 2)
+
+cat("✓ Model trained in", training_time_dt, "seconds\n\n")
+
+# Display model information
+cat("Model complexity:\n")
+cat("  - Number of splits:", nrow(fitDT$splits), "\n")
+cat("  - Tree depth:", max(rpart:::tree.depth(as.numeric(rownames(fitDT$frame)))), "\n")
+cat("  - Terminal nodes:", sum(fitDT$frame$var == "<leaf>"), "\n")
+```
+
+### Visualization
+```{r dt_visualization, fig.width=14, fig.height=10}
+# Plot the decision tree
+rpart.plot(fitDT, 
+           main = "Decision Tree Classification Model", 
+           extra = 104,
+           under = TRUE, 
+           faclen = 0,
+           cex = 0.8,
+           box.palette = "Blues")
+```
+
+### Performance Evaluation
+```{r decision_tree_evaluation}
+# Predict on validation set
+predictionDT <- predict(fitDT, NEOTesting, type = "class")
+
+# Evaluate Decision Tree performance
+confMatrixDT <- confusionMatrix(predictionDT, NEOTesting$classe)
+print(confMatrixDT)
+
+# Extract key metrics
+accuracy_dt <- confMatrixDT$overall['Accuracy']
+kappa_dt <- confMatrixDT$overall['Kappa']
+```
+
+### Decision Tree Summary
+```{r dt_summary}
+# Create performance summary
+dt_metrics <- data.frame(
+  Metric = c("Accuracy", "Kappa", "95% CI Lower", "95% CI Upper", 
+             "Training Time (sec)", "No Information Rate", "P-Value [Acc > NIR]"),
+  Value = c(
+    round(accuracy_dt * 100, 2),
+    round(kappa_dt, 4),
+    round(confMatrixDT$overall['AccuracyLower'] * 100, 2),
+    round(confMatrixDT$overall['AccuracyUpper'] * 100, 2),
+    as.numeric(training_time_dt),
+    round(confMatrixDT$overall['AccuracyNull'] * 100, 2),
+    format(confMatrixDT$overall['AccuracyPValue'], scientific = TRUE, digits = 3)
+  )
+)
+
+knitr::kable(dt_metrics, 
+             caption = "Decision Tree Performance Metrics",
+             col.names = c("Metric", "Value"))
+```
+
+**Key Findings:**
+
+- Overall Accuracy: **`r round(accuracy_dt * 100, 2)`%**
+- Kappa Statistic: **`r round(kappa_dt, 4)`**
+- Training Time: **`r training_time_dt` seconds**
+
+---
+
+## Random Forest Model
+
+### Training
+```{r random_forest_training}
+cat("========================================\n")
+cat("RANDOM FOREST MODEL\n")
+cat("========================================\n\n")
+
+# Train Random Forest model
+cat("Training Random Forest model...\n")
+cat("This may take a few minutes...\n\n")
+
+start_time <- Sys.time()
+fitRF <- randomForest(classe ~ ., data = NEOTraining, importance = TRUE)
+end_time <- Sys.time()
+training_time_rf <- round(difftime(end_time, start_time, units = "secs"), 2)
+
+cat("✓ Model trained in", training_time_rf, "seconds\n\n")
+
+# Display model summary
+print(fitRF)
+```
+
+### Out-of-Bag Error Analysis
+```{r oob_error_plot, fig.width=10, fig.height=6}
+# Plot OOB error rates
+oob_df <- data.frame(
+  Trees = 1:nrow(fitRF$err.rate),
+  OOB_Error = fitRF$err.rate[, "OOB"] * 100
+)
+
+ggplot(oob_df, aes(x = Trees, y = OOB_Error)) +
+  geom_line(color = "steelblue", size = 1) +
+  theme_minimal() +
+  labs(title = "Out-of-Bag Error Rate vs Number of Trees",
+       x = "Number of Trees",
+       y = "OOB Error Rate (%)") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+### Variable Importance
+```{r variable_importance, fig.width=12, fig.height=8}
+# Plot variable importance
+varImpPlot(fitRF, 
+           main = "Variable Importance in Random Forest Model",
+           n.var = 20, 
+           pch = 16, 
+           col = "steelblue",
+           cex = 0.9)
+
+# Get top 10 most important variables
+importance_df <- as.data.frame(importance(fitRF))
+importance_df$Variable <- rownames(importance_df)
+importance_df <- importance_df[order(-importance_df$MeanDecreaseGini), ]
+top10 <- head(importance_df[, c("Variable", "MeanDecreaseAccuracy", "MeanDecreaseGini")], 10)
+rownames(top10) <- NULL
+
+knitr::kable(top10,
+             caption = "Top 10 Most Important Variables",
+             col.names = c("Variable", "Mean Decrease Accuracy", "Mean Decrease Gini"),
+             digits = 2)
+```
+
+### Performance Evaluation
+```{r random_forest_evaluation}
+# Predict on validation set
+predictionRF <- predict(fitRF, NEOTesting)
+
+# Evaluate Random Forest performance
+confMatrixRF <- confusionMatrix(predictionRF, NEOTesting$classe)
+print(confMatrixRF)
+
+# Extract key metrics
+accuracy_rf <- confMatrixRF$overall['Accuracy']
+kappa_rf <- confMatrixRF$overall['Kappa']
+oob_error <- tail(fitRF$err.rate[, 1], 1)
+```
+
+### Random Forest Summary
+```{r rf_summary}
+# Create performance summary
+rf_metrics <- data.frame(
+  Metric = c("Accuracy", "Kappa", "95% CI Lower", "95% CI Upper", 
+             "OOB Error Rate", "Training Time (sec)", "Number of Trees", "Variables per Split"),
+  Value = c(
+    round(accuracy_rf * 100, 2),
+    round(kappa_rf, 4),
+    round(confMatrixRF$overall['AccuracyLower'] * 100, 2),
+    round(confMatrixRF$overall['AccuracyUpper'] * 100, 2),
+    round(oob_error * 100, 2),
+    as.numeric(training_time_rf),
+    fitRF$ntree,
+    fitRF$mtry
+  )
+)
+
+knitr::kable(rf_metrics, 
+             caption = "Random Forest Performance Metrics",
+             col.names = c("Metric", "Value"))
+```
+
+**Key Findings:**
+
+- Overall Accuracy: **`r round(accuracy_rf * 100, 2)`%**
+- Kappa Statistic: **`r round(kappa_rf, 4)`**
+- OOB Error Rate: **`r round(oob_error * 100, 2)`%**
+- Training Time: **`r training_time_rf` seconds**
+
+---
+
+# Model Comparison
+
+## Performance Metrics Comparison
+```{r model_comparison}
+# Create comprehensive comparison table
+comparison <- data.frame(
+  Model = c("Decision Tree", "Random Forest"),
+  Accuracy = c(accuracy_dt * 100, accuracy_rf * 100),
+  Kappa = c(kappa_dt, kappa_rf),
+  CI_Lower = c(confMatrixDT$overall['AccuracyLower'] * 100, 
+               confMatrixRF$overall['AccuracyLower'] * 100),
+  CI_Upper = c(confMatrixDT$overall['AccuracyUpper'] * 100,
+               confMatrixRF$overall['AccuracyUpper'] * 100),
+  Training_Time = c(training_time_dt, training_time_rf),
+  Sensitivity_Avg = c(mean(confMatrixDT$byClass[, 'Sensitivity']) * 100,
+                      mean(confMatrixRF$byClass[, 'Sensitivity']) * 100),
+  Specificity_Avg = c(mean(confMatrixDT$byClass[, 'Specificity']) * 100,
+                      mean(confMatrixRF$byClass[, 'Specificity']) * 100)
+)
+
+knitr::kable(comparison, 
+             caption = "Comprehensive Model Performance Comparison",
+             col.names = c("Model", "Accuracy (%)", "Kappa", "95% CI Lower", 
+                          "95% CI Upper", "Training Time (s)", 
+                          "Avg Sensitivity (%)", "Avg Specificity (%)"),
+             digits = 2)
+```
+
+## Visual Comparison
+```{r comparison_plot, fig.width=12, fig.height=6}
+# Prepare data for visualization
+comp_long <- data.frame(
+  Model = rep(c("Decision Tree", "Random Forest"), 3),
+  Metric = rep(c("Accuracy", "Sensitivity", "Specificity"), each = 2),
+  Value = c(comparison$Accuracy[1], comparison$Accuracy[2],
+            comparison$Sensitivity_Avg[1], comparison$Sensitivity_Avg[2],
+            comparison$Specificity_Avg[1], comparison$Specificity_Avg[2])
+)
+
+ggplot(comp_long, aes(x = Metric, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  geom_text(aes(label = paste0(round(Value, 1), "%")), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 4) +
+  theme_minimal() +
+  labs(title = "Model Performance Comparison",
+       x = "Performance Metric",
+       y = "Percentage (%)") +
+  scale_fill_brewer(palette = "Set1") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        legend.position = "top") +
+  ylim(0, 105)
+```
+
+## Best Model Selection
+```{r best_model_selection}
+if (accuracy_rf > accuracy_dt) {
+  best_model_name <- "Random Forest"
+  best_accuracy <- accuracy_rf * 100
+  improvement <- (accuracy_rf - accuracy_dt) * 100
+} else {
+  best_model_name <- "Decision Tree"
+  best_accuracy <- accuracy_dt * 100
+  improvement <- (accuracy_dt - accuracy_rf) * 100
+}
+
+cat("========================================\n")
+cat("BEST MODEL SELECTION\n")
+cat("========================================\n\n")
+cat("Selected Model:", best_model_name, "\n")
+cat("Accuracy:", round(best_accuracy, 2), "%\n")
+cat("Improvement over alternative:", round(improvement, 2), "percentage points\n")
+```
+
+**Conclusion:** The **`r best_model_name`** model is selected for final predictions based on superior accuracy of **`r round(best_accuracy, 2)`%**.
+
+---
+
+# Final Predictions on Test Set
+```{r final_predictions}
+cat("========================================\n")
+cat("FINAL TEST SET PREDICTIONS\n")
+cat("========================================\n\n")
+
+# Perform prediction on test set using Random Forest (best model)
+cat("Generating predictions using", best_model_name, "model...\n\n")
+predictSubmission <- predict(fitRF, testing)
+
+# Create prediction results table
+prediction_df <- data.frame(
+  Test_Case = 1:length(predictSubmission),
+  Predicted_Class = as.character(predictSubmission)
+)
+
+knitr::kable(prediction_df, 
+             caption = "Final Predictions on Test Set (20 Cases)",
+             col.names = c("Test Case", "Predicted Class"),
+             align = 'c')
+
+# Summary of predictions
+pred_summary <- as.data.frame(table(predictSubmission))
+names(pred_summary) <- c("Class", "Count")
+
+cat("\nPrediction Summary:\n")
+knitr::kable(pred_summary,
+             caption = "Distribution of Predicted Classes",
+             col.names = c("Predicted Class", "Frequency"))
+```
+
+## Prediction Distribution
+```{r prediction_distribution, fig.width=8, fig.height=5}
+ggplot(pred_summary, aes(x = Class, y = Count, fill = Class)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = Count), vjust = -0.5, size = 5) +
+  theme_minimal() +
+  labs(title = "Distribution of Predictions on Test Set",
+       x = "Predicted Class", y = "Frequency") +
+  scale_fill_brewer(palette = "Set2") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+---
+
+# Conclusions and Recommendations
+
+## Summary of Findings
+
+### Data
+
+- **Training Dataset:** `r nrow(training)` observations with `r ncol(training) - 1` predictors
+- **Test Dataset:** `r nrow(testing)` observations
+- **Target Variable:** 5 classes (A, B, C, D, E)
+- **Data Quality:** Cleaned by removing `r orig_train_cols - ncol(training)` variables with missing values
+
+### Model Performance
+
+**Decision Tree:**
+
+- Accuracy: `r round(accuracy_dt * 100, 2)`%
+- Kappa: `r round(kappa_dt, 4)`
+- Training Time: `r training_time_dt` seconds
+- Advantages: Fast, interpretable, visual representation
+- Disadvantages: Lower accuracy, prone to overfitting
+
+**Random Forest:**
+
+- Accuracy: `r round(accuracy_rf * 100, 2)`%
+- Kappa: `r round(kappa_rf, 4)`
+- OOB Error: `r round(oob_error * 100, 2)`%
+- Training Time: `r training_time_rf` seconds
+- Advantages: High accuracy, robust, handles complex interactions
+- Disadvantages: Longer training time, less interpretable
+
+### Final Model Selection
+
+The **Random Forest** model was selected as the final model due to:
+
+1. **Superior Accuracy:** `r round(accuracy_rf * 100, 2)`% vs `r round(accuracy_dt * 100, 2)`%
+2. **Better Generalization:** Low OOB error rate of `r round(oob_error * 100, 2)`%
+3. **High Confidence:** 95% CI [`r round(confMatrixRF$overall['AccuracyLower'] * 100, 2)`%, `r round(confMatrixRF$overall['AccuracyUpper'] * 100, 2)`%]
+4. **Consistent Performance:** High sensitivity and specificity across all classes
+
+## Recommendations
+
+1. **Model Deployment:** The Random Forest model is ready for deployment with expected accuracy of ~`r round(accuracy_rf * 100, 2)`%
+
+2. **Feature Engineering:** Consider focusing on the top 10 most important variables for future model iterations to reduce complexity
+
+3. **Model Monitoring:** Implement performance monitoring to track accuracy over time and retrain if performance degrades
+
+4. **Ensemble Methods:** Consider combining both models in an ensemble approach for potentially even better performance
+
+5. **Hyperparameter Tuning:** Further improvements possible through systematic hyperparameter optimization
+
+## Expected Out-of-Sample Error
+
+Based on cross-validation results:
+
+- **Expected Error Rate:** `r round((1 - accuracy_rf) * 100, 2)`%
+- **95% Confidence Interval:** [`r round((1 - confMatrixRF$overall['AccuracyUpper']) * 100, 2)`%, `r round((1 - confMatrixRF$overall['AccuracyLower']) * 100, 2)`%]
+
+---
+
+# Technical Appendix
+
+## Session Information
+```{r session_info}
+sessionInfo()
+```
+
+## Reproducibility
+
+This analysis is fully reproducible using:
+
+- **Random Seed:** 20000
+- **R Version:** `r R.version.string`
+- **Date:** `r Sys.Date()`
+- **Platform:** `r sessionInfo()$platform`
+
+## Data Sources
+
+- **Training Data:** `r trainUrl`
+- **Testing Data:** `r testUrl`
+
+---
+
+## Contact Information
+
+**Author:** David  
+**Department:** CDSE  
+**Date Generated:** `r format(Sys.time(), '%B %d, %Y at %H:%M')`
+
+---
+
+<div style="text-align: center; color: #666; margin-top: 40px; padding: 20px; border-top: 2px solid #ddd;">
+**End of Report**  
+Generated automatically using R Markdown
+</div>
