@@ -1,0 +1,93 @@
+# MACHINE LEARNING PREDICTION MODE
+
+# I. PACKAGE INSTALLATION AND LOADING
+
+# Define required packages
+required_packages <- c("caret", "randomForest", "rpart")
+
+# Install and load packages
+for (package in required_packages) {
+    if (!require(package, character.only = TRUE)) {
+        install.packages(package)
+        library(package, character.only = TRUE)
+    }
+}
+
+# Set seed for reproducibility
+set.seed(20000)
+
+# II. DATA LOADING
+
+# Define URLs
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"   
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Load data to memory
+training <- read.csv(url(trainUrl), na.strings = c("NA", "#DIV/0!", ""))  
+testing <- read.csv(url(testUrl), na.strings = c("NA", "#DIV/0!", ""))
+
+# III. DATA CLEANING
+
+# Remove variables with near zero variance (columns with all NAs)
+training <- training[, colSums(is.na(training)) == 0]
+testing <- testing[, colSums(is.na(testing)) == 0]
+
+# Remove non-predictor columns (first seven columns)
+training <- training[, -c(1:7)]
+testing <- testing[, -c(1:7)]
+
+# Ensure classe is a factor for classification
+training$classe <- as.factor(training$classe)
+
+# Display dimensions after cleaning
+cat("Training data dimensions:", dim(training), "\n")
+
+# IV. CROSS-VALIDATION SETUP
+
+# Split training data: 75% training, 25% validation
+inTrain <- createDataPartition(y = training$classe, p = 0.75, list = FALSE)    
+NEOTraining <- training[inTrain, ]
+NEOTesting <- training[-inTrain, ]
+
+# Display dimensions of split data
+cat("NEOTraining dimensions:", dim(NEOTraining), "\n")
+cat("NEOTesting dimensions:", dim(NEOTesting), "\n")
+
+# V. MODEL TRAINING AND EVALUATION
+
+# Decision Tree Model
+
+# Train Decision Tree model
+cat("\n--- DECISION TREE MODEL ---\n")
+fitDT <- rpart(classe ~ ., data = NEOTraining, method = "class")
+
+# Predict on validation set
+predictionDT <- predict(fitDT, NEOTesting, type = "class")
+
+# Evaluate Decision Tree performance
+cat("Decision Tree Confusion Matrix:\n")
+print(confusionMatrix(predictionDT, NEOTesting$classe))
+
+# Random Forest Model
+
+# Train Random Forest model
+cat("\n--- RANDOM FOREST MODEL ---\n")
+# Note: randomForest() does NOT use 'method' parameter
+# It automatically detects classification when response is a factor
+fitRF <- randomForest(classe ~ ., data = NEOTraining)
+
+# Predict on validation set
+predictionRF <- predict(fitRF, NEOTesting)
+
+# Evaluate Random Forest performance
+cat("\nRandom Forest Confusion Matrix:\n")
+print(confusionMatrix(predictionRF, NEOTesting$classe))
+
+# VI. FINAL PREDICTIONS ON TEST SET
+
+# Perform prediction on test set using best model (Random Forest)
+cat("\n--- FINAL TEST SET PREDICTIONS ---\n")
+predictSubmission <- predict(fitRF, testing)
+print(predictSubmission)
+
+# END OF SCRIPT
